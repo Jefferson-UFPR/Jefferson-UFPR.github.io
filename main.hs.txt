@@ -1,0 +1,123 @@
+import Network.Simple.TCP
+import Data.ByteString
+import Data.Binary
+import qualified Data.ByteString.Lazy.Char8 as C
+import Data.Maybe
+import Data.Char
+import Codec.Crypto.AES
+
+main = undefined
+
+{-
+  Como funciona:
+  1p. cliente tem que dar "Bom dia" ao servidor
+  2p. servidor envia o numero primo P
+  3p. servidor envia  a base G
+  4p. cliente envia chave publica
+  5p. servidor envia chave publica
+  6c. ambos geram a chave comum
+  7c. cliente manda texto
+  8c. servidor manda eco do texto em capslock e sem numeros e espaços
+  --transmissão morre--
+-}
+
+numeroPrimoMagico = 2543568463::Integer
+baseMagica = 1330201709::Integer
+chavePrivadaCliente = 2293461::Integer
+chavePrivadaServidor = 4353580::Integer
+trabalho = "t346r343ab344a23l4h62o62346 d3463e36 63246r342e6d3462es 7ii75745554"
+numBytesMessage = 500
+
+
+
+cliente :: IO()
+cliente = connect "127.0.0.1" "6969" $ \(connectionSocket,remoteAddr) -> do
+  Prelude.putStrLn $ "Conecção estabelecida com " ++ show remoteAddr
+  print "Trocando chaves, aguarde..."
+  key <- conversaPublicaCliente connectionSocket numBytesMessage
+  print $ "Chave estabelecida: " ++ show key
+  if (key == 0)
+    then print "A chave estabelecida é inválida."
+    else do
+    print "Transmissao do payload começado"
+    let aesKey = Data.ByteString.take 16 $ C.toStrict $ encode (1000000000000000000000+key::Integer)
+    sendLazy connectionSocket $ crypt (CFB) (aesKey) (aesKey) (Encrypt) (C.pack trabalho) --7c
+    resposta <- recv connectionSocket numBytesMessage
+    if(isNothing resposta)
+      then print "O servidor não respondeu o payload"
+      else do
+      let final = crypt (CFB) (aesKey) (aesKey) (Decrypt) (C.fromStrict (fromJust resposta))
+      print $ "O resultadod o trabalho do servidor: " ++ C.unpack final
+      print "fim!"
+
+servidor :: IO()
+servidor = serve (Host "127.0.0.1") "6969" $ \(connectionSocket,remoteAddr) -> do
+  Prelude.putStrLn $ "Conexão TCP estabelecida com " ++ show remoteAddr
+  print "Trocando chaves, aguarde..."
+  key <- conversaPublicaServidor connectionSocket numBytesMessage
+  print $ "Chave estabelecida: " ++ show key
+  if (key == 0)
+    then print "A chave estabelecida é inválida."
+    else do
+    let aesKey = Data.ByteString.take 16 $ C.toStrict $ encode (1000000000000000000000+key::Integer)
+    print "Esperando payload"
+    payload <- recv connectionSocket numBytesMessage
+    if (isNothing payload)
+      then print "Payload não veio"
+      else do
+      let traducao = crypt (CFB) (aesKey) (aesKey) (Decrypt) (C.fromStrict (fromJust payload))
+      let resposta = (C.toStrict . C.pack) $ Prelude.filter isLetter $ C.unpack traducao
+      sendLazy connectionSocket $ crypt (CFB) (aesKey) (aesKey) (Encrypt) (C.fromStrict resposta) --8c
+      print "fim!"
+
+
+cleanTranslate a = read (Prelude.map (chr . fromIntegral) (unpack (fromJust a)))::Integer
+
+conversaPublicaCliente c n = do
+  sendLazy c $ C.pack "Bom dia!"                                          --1p
+  p <- (recv c n)
+  if(isNothing p)
+    then do print "Deu erro no P"
+            return 0
+    else do
+    g <- (recv c n)
+    if(isNothing g)
+      then do print "Deu erro no G"
+              return 0
+      else do
+      let pT = cleanTranslate p
+      let gT = cleanTranslate g
+      let kP =  pT^chavePrivadaCliente `mod` gT
+      sendLazy c $ C.pack $ show kP                                        --4p
+      serverK <- (recv c n)
+      if(isNothing serverK)
+        then do print "Nao veio chave publica do servidor"
+                return 0
+        else do
+        let serverKT = cleanTranslate serverK
+        let commonKey = serverKT^chavePrivadaCliente `mod` gT              --6c
+        return commonKey
+
+conversaPublicaServidor c n = do
+  beginT <- (recv c n)
+  if(isNothing beginT)
+    then do print "Não veio mensagem"
+            return 0
+    else
+    if((fromJust beginT) /= (C.toStrict (C.pack "Bom dia!")))
+      then do print "Quero meu bom dia"
+              return 0
+      else do
+      sendLazy c $ C.pack $ show numeroPrimoMagico                         --2p
+      sendLazy c $ C.pack $ show baseMagica                                --3p
+      clientK <- (recv c n)
+      if(isNothing clientK)
+        then do print "Nao veio chave publica do cliente"
+                return 0
+        else do
+        sendLazy c $ C.pack $ show (numeroPrimoMagico^chavePrivadaServidor `mod` baseMagica) --5p
+        let clientKT = cleanTranslate clientK
+        let commonKey = clientKT^chavePrivadaServidor `mod` baseMagica      --6c
+        return commonKey
+
+
